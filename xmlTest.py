@@ -1,6 +1,7 @@
 import re
 import xml.etree.ElementTree as ET
 import time
+import os
 
 def process_file(input_file_path, output_file_path):
     start_writing = False
@@ -62,17 +63,16 @@ def process_file(input_file_path, output_file_path):
 def process_line(line, root):
     modified = True
     while modified:
-        modified = False
-        line, mod1 = replace_odkaz(line, root)
-        line, mod2 = replace_odkazo(line, root)
-        modified = mod1 or mod2
+        line, modified = replace_odkaz(line, root)
+        if not modified:
+            line, modified = replace_odkazo(line, root)
     return line
 
 def replace_odkaz(line, root):
-    return replace_tag(line, root, "<odkaz n=\"", "defpozn", "f")
+    return replace_tag(line, root, "<odkaz n=\"", "defpozn", "\\f")
 
 def replace_odkazo(line, root):
-    return replace_tag(line, root, "<odkazo n=\"", "defpozno", "fo")
+    return replace_tag(line, root, "<odkazo n=\"", "defpozno", "\\fo")
 
 def replace_tag(line, root, start_tag, xml_tag, replace_tag):
     start_index = line.find(start_tag)
@@ -104,7 +104,7 @@ def get_defpozn_text(root, odkaz, tag):
 
 def replace_text_with_tags(line, start_index, end_index, new_text, tag):
     sample = line[start_index:end_index]
-    return line.replace(sample, f"/{tag}{new_text}/{tag}*")
+    return line.replace(sample, f"{tag}{new_text}{tag}*")
 
 if __name__ == "__main__":
     input_file_path = "D:\\Downloads\\Studijni Bible\\Studijni_Bible\\GenMod.xml"
