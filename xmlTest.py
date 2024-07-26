@@ -1,116 +1,152 @@
+import os
 import re
 import xml.etree.ElementTree as ET
-import time
-import os
 
-def process_file(input_file_path, output_file_path):
-    start_writing = False
+
+def get_file_path(prompt):
+    return input(prompt).strip()
+
+def detect_encoding_robust(file_path):
+    encodings_to_try = ['windows-1250', 'utf-8', 'ibm852', 'iso-8859-2']
+    
+    for encoding in encodings_to_try:
+        try:
+            with open(file_path, 'r', encoding=encoding) as file:
+                first_line = file.readline()
+                if first_line and '<?xml' in first_line:
+                    match = re.search(r'encoding=["\'](.+?)["\']', first_line)
+                    if match:
+                        encoding_name = match.group(1)
+                        try:
+                            return encoding_name
+                        except LookupError:
+                            pass
+                    return encoding
+        except UnicodeDecodeError:
+            continue
+    
+    print("Nepodařilo se detekovat kódování. Použije se Windows-1250.")
+    return 'windows-1250'
+
+def process_defpozn(line, tag_name, replace_tag):
+    pattern = f'<{tag_name} n="(.+?)">(.*?)</{tag_name}>'
+    return re.sub(pattern, lambda m: f"{replace_tag}{m.group(2)}{replace_tag}*", line)
+
+def replace_odkaz(line, root, modified):
+    start_index = line.find('<odkaz n="')
+    if start_index != -1:
+        end_index = line.find('"/>', start_index)
+        if end_index != -1:
+            odkaz = line[start_index + 10:end_index].strip('"')
+            if odkaz:
+                new_text = get_defpozn_text(root, odkaz)
+                if new_text:
+                    line = line[:start_index] + f"\\f{new_text}\\f*" + line[end_index + 3:]
+                    modified[0] = True
+    return line
+
+def replace_odkazo(line, root, modified):
+    start_index = line.find('<odkazo n="')
+    if start_index != -1:
+        end_index = line.find('"/>', start_index)
+        if end_index != -1:
+            odkaz = line[start_index + 11:end_index].strip('"')
+            if odkaz:
+                new_text = get_defpozno_text(root, odkaz)
+                if new_text:
+                    line = line[:start_index] + f"\\fo{new_text}\\fo*" + line[end_index + 3:]
+                    modified[0] = True
+    return line
+
+def get_defpozn_text(root, odkaz):
+    defpozn = root.find(f".//defpozn[@n='{odkaz}']")
+    return defpozn.text if defpozn is not None else None
+
+def get_defpozno_text(root, odkaz):
+    defpozno = root.find(f".//defpozno[@n='{odkaz}']")
+    return defpozno.text if defpozno is not None else None
+
+def process_line(line, root):
+    if '<defpozno' in line or '<defpozn' in line:
+        line = process_defpozn(line, 'defpozno', '\\fo')
+        line = process_defpozn(line, 'defpozn', '\\f')
+    else:
+        modified = [False]
+        while True:
+            line = replace_odkaz(line, root, modified)
+            line = replace_odkazo(line, root, modified)
+            if not modified[0]:
+                break
+            modified[0] = False
+    return line
+
+def process_file(input_file_path, output_file_path, input_encoding):
+    print("Začínám zpracování souboru...")
     output = []
 
     tree = ET.parse(input_file_path)
     root = tree.getroot()
 
-    with open(input_file_path, 'r', encoding='utf-8') as reader:
-        for line in reader:
-            if not start_writing and "<titulek>" in line:
-                start_writing = True
+    with open(input_file_path, 'r', encoding=input_encoding) as file:
+        start_recording = False
+        for line in file:
+            if line.startswith('<?xml') or line.startswith('<!DOCTYPE'):
+                continue
 
-            if start_writing:
-                line = process_line(line, root)
+            if '<titulek>' in line:
+                print("Nalezen tag <titulek> - začínám zaznamenávat.")
+                start_recording = True
+
+            if start_recording:
+                line = process_line(line.strip(), root)
                 output.append(line)
 
-    final_output = ''.join(output).rstrip()
-    last_book_tag_index = final_output.rfind("</kniha>")
-    if last_book_tag_index != -1:
-        final_output = final_output[:last_book_tag_index]
+    final_output = '\n'.join(output).rstrip()
+
+    if final_output.endswith('</kniha>'):
+        final_output = final_output[:-8].rstrip()
 
     if not final_output.strip():
-        print("Warning: No content was processed. The output file will be empty.")
+        print("Varování: Nebyl zpracován žádný obsah. Výstupní soubor bude prázdný.")
     else:
         try:
-            with open(output_file_path, 'w', encoding='utf-8') as writer:
-                writer.write(final_output)
+            with open(output_file_path, 'w', encoding='utf-8') as file:
+                file.write(final_output)
 
-            print("Waiting for 5 seconds...")
-            time.sleep(5)
+            print(f"Výstup byl úspěšně zapsán do: {output_file_path}")
+            print(f"Délka výsledného obsahu: {len(final_output)} znaků")
+            print("Použité kódování: UTF-8")
 
-            if os.path.exists(output_file_path):
-                with open(output_file_path, 'r', encoding='utf-8') as f:
-                    content_after_wait = f.read()
-                print(f"File content after 5 seconds: {content_after_wait[:100]}")
-
-            print(f"Attempting to write {len(final_output)} characters to file.")
-
-            if os.path.exists(output_file_path):
-                file_size = os.path.getsize(output_file_path)
-                print(f"File created. File size: {file_size} bytes")
-
-                if file_size > 0:
-                    print(f"Output successfully written to: {output_file_path}")
-                    print(f"Final content length: {len(final_output)} characters")
-
-                    with open(output_file_path, 'r', encoding='utf-8') as f:
-                        file_content = f.read()
-                    print(f"First 100 characters of file content: {file_content[:100]}")
-                else:
-                    print("Warning: File was created but is empty.")
-            else:
-                print("Error: File was not created.")
+            with open(output_file_path, 'r', encoding='utf-8') as file:
+                file_content = file.read(100)
+                print(f"Prvních 100 znaků obsahu souboru: {file_content}")
         except Exception as ex:
-            print(f"Error writing to file: {str(ex)}")
-            print(f"Stack trace: {traceback.format_exc()}")
+            print(f"Chyba při zápisu do souboru: {str(ex)}")
+            raise
 
-def process_line(line, root):
-    modified = True
-    while modified:
-        line, modified = replace_odkaz(line, root)
-        if not modified:
-            line, modified = replace_odkazo(line, root)
-    return line
+def main():
+    try:
+        input_file_path = get_file_path("Zadejte cestu k vstupnímu XML souboru: ")
+        output_file_path = get_file_path("Zadejte cestu k výstupnímu souboru: ")
 
-def replace_odkaz(line, root):
-    return replace_tag(line, root, "<odkaz n=\"", "defpozn", "\\f")
+        if not os.path.exists(input_file_path):
+            raise FileNotFoundError(f"Vstupní soubor nebyl nalezen: {input_file_path}")
 
-def replace_odkazo(line, root):
-    return replace_tag(line, root, "<odkazo n=\"", "defpozno", "\\fo")
+        input_encoding = detect_encoding_robust(input_file_path)
+        print(f"Detekované kódování: {input_encoding}")
 
-def replace_tag(line, root, start_tag, xml_tag, replace_tag):
-    start_index = line.find(start_tag)
-    if start_index != -1:
-        end_index = find_end_index(line, start_index)
-        if end_index != -1:
-            odkaz = extract_odkaz_value(line, start_index)
-            if odkaz:
-                new_text = get_defpozn_text(root, odkaz, xml_tag)
-                if new_text:
-                    line = replace_text_with_tags(line, start_index, end_index, new_text, replace_tag)
-                    return line, True
-    return line, False
+        if input_encoding != 'windows-1250':
+            print("Přepínám na Windows-1250 kódování...")
+            input_encoding = 'windows-1250'
 
-def find_end_index(line, start_index):
-    match = re.search('"/>', line[start_index:])
-    return start_index + match.end() if match else -1
+        process_file(input_file_path, output_file_path, input_encoding)
 
-def extract_odkaz_value(line, start_index):
-    start_quote = line.index('"', start_index) + 1
-    end_quote = line.index('"', start_quote)
-    return line[start_quote:end_quote] if end_quote > start_quote else None
-
-def get_defpozn_text(root, odkaz, tag):
-    for elem in root.iter(tag):
-        if elem.get('n') == odkaz:
-            return ''.join(elem.itertext())
-    return None
-
-def replace_text_with_tags(line, start_index, end_index, new_text, tag):
-    sample = line[start_index:end_index]
-    return line.replace(sample, f"{tag}{new_text}{tag}*")
+        print("Zpracování dokončeno.")
+    except Exception as ex:
+        print(f"Došlo k chybě: {str(ex)}")
+        print(f"Stack trace: {ex.__traceback__}")
+    finally:
+        input("Stiskněte Enter pro ukončení...")
 
 if __name__ == "__main__":
-    input_file_path = "D:\\Downloads\\Studijni Bible\\Studijni_Bible\\GenMod.xml"
-    output_file_path = "D:\\Downloads\\GenModified.txt"
-
-    try:
-        process_file(input_file_path, output_file_path)
-    except Exception as ex:
-        print(f"An error occurred: {str(ex)}")
+    main()
